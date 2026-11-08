@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Code, GraduationCap, ShieldCheck, ArrowRight,
-  AlertCircle, KeyRound, Sparkles, CheckCircle2, User, Lock, Users
+  AlertCircle, KeyRound, Sparkles, CheckCircle2, User, Lock, Users, Globe, HelpCircle
 } from 'lucide-react';
 import {
   signInWithPopup,
@@ -12,6 +12,7 @@ import {
 import { auth } from '../../services/firebase';
 import { api } from '../../services/api';
 import { ClassGroup } from '../../types';
+import { UnauthorizedDomainModal } from '../common/UnauthorizedDomainModal';
 
 interface Props {
   onTeacherLogin: (user: any) => void;
@@ -44,6 +45,7 @@ export const WelcomePortal: React.FC<Props> = ({
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [teacherError, setTeacherError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [showUnauthorizedDomainModal, setShowUnauthorizedDomainModal] = useState(false);
 
   // Fetch available classes for students to select
   useEffect(() => {
@@ -106,6 +108,9 @@ export const WelcomePortal: React.FC<Props> = ({
       console.error('Google Sign-in error:', err);
       if (err.code === 'auth/popup-closed-by-user') {
         setTeacherError('Cửa sổ đăng nhập Google đã bị đóng. Vui lòng thử lại.');
+      } else if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
+        setShowUnauthorizedDomainModal(true);
+        setTeacherError('Tên miền ứng dụng chưa được ủy quyền trên Firebase Authentication (auth/unauthorized-domain). Vui lòng nhấn vào "Hướng dẫn cấp quyền tên miền" để thêm miền vào Firebase Console.');
       } else {
         setTeacherError(err.message || 'Lỗi xác thực tài khoản qua Google Firebase.');
       }
@@ -238,6 +243,18 @@ export const WelcomePortal: React.FC<Props> = ({
                     <span>{isLoggingIn ? 'Đang xác thực...' : 'Đăng nhập với Google (Firebase Auth)'}</span>
                   </button>
 
+                  {/* Domain authorization helper trigger */}
+                  <div className="flex items-center justify-center pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowUnauthorizedDomainModal(true)}
+                      className="text-slate-500 hover:text-blue-700 text-[11px] font-medium hover:underline flex items-center gap-1.5 transition-colors"
+                    >
+                      <Globe className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Cần cấp quyền tên miền Cloud Run? Nhấn vào đây</span>
+                    </button>
+                  </div>
+
                   <div className="relative flex py-1 items-center">
                     <div className="grow border-t border-slate-200"></div>
                     <span className="shrink mx-3 text-[10px] uppercase font-bold text-slate-400">Hoặc dùng Email</span>
@@ -270,9 +287,27 @@ export const WelcomePortal: React.FC<Props> = ({
                   )}
 
                   {teacherError && (
-                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2">
-                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                      <span>{teacherError}</span>
+                    <div className={`p-3.5 rounded-xl text-xs flex flex-col gap-2 ${
+                      teacherError.includes('unauthorized-domain')
+                        ? 'bg-amber-50 border border-amber-300 text-amber-900'
+                        : 'bg-red-50 border border-red-200 text-red-700'
+                    }`}>
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className={`w-4 h-4 shrink-0 mt-0.5 ${teacherError.includes('unauthorized-domain') ? 'text-amber-600' : 'text-red-600'}`} />
+                        <span className="leading-relaxed font-medium">{teacherError}</span>
+                      </div>
+                      {teacherError.includes('unauthorized-domain') && (
+                        <div className="pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowUnauthorizedDomainModal(true)}
+                            className="py-1.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-[11px] flex items-center gap-1.5 transition-colors shadow-xs"
+                          >
+                            <Globe className="w-3.5 h-3.5" />
+                            <span>Mở hướng dẫn thêm tên miền vào Firebase (1 Click)</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -545,6 +580,13 @@ export const WelcomePortal: React.FC<Props> = ({
       <footer className="px-6 py-6 border-t border-slate-200 bg-white text-center text-xs text-slate-500">
         <p>AuthentiCode – Hệ thống hỗ trợ đánh giá xác thực năng lực lập trình Python của học sinh THCS trong bối cảnh GenAI</p>
       </footer>
+
+      {/* Unauthorized Domain Modal */}
+      <UnauthorizedDomainModal
+        isOpen={showUnauthorizedDomainModal}
+        onClose={() => setShowUnauthorizedDomainModal(false)}
+        onRetry={handleGoogleSignIn}
+      />
     </div>
   );
 };

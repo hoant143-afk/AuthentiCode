@@ -187,6 +187,13 @@ service cloud.firestore {
                   Cập nhật cấu hình vào tệp <code className="bg-slate-200 px-1 rounded">firebase-applet-config.json</code> hoặc cấp quyền qua giao diện thiết lập của Google AI Studio.
                 </p>
               </div>
+
+              <div className="flex items-start gap-3">
+                <span className="font-semibold text-slate-900 shrink-0">Bước 4:</span>
+                <p>
+                  Thêm tên miền <code className="bg-slate-200 px-1 rounded font-mono font-bold">run.app</code> vào <strong>Authentication &gt; Settings &gt; Authorized domains</strong> trong Firebase Console để cho phép đăng nhập Google từ môi trường đám mây (tránh lỗi <code>auth/unauthorized-domain</code>).
+                </p>
+              </div>
             </div>
 
             <div className="space-y-2">
