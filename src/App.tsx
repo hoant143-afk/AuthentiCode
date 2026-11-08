@@ -69,14 +69,6 @@ export default function App() {
     setCurrentView('student');
   };
 
-  const handleTeacherRoleSwitch = (newRole: string) => {
-    setActiveTeacher(prev => ({
-      ...prev,
-      role: newRole,
-      name: newRole === 'second_grader' ? 'Thầy Hoàng Văn Hải (Giám khảo 2)' : newRole === 'admin' ? 'Quản trị viên Hệ thống' : 'Cô Bống Nguyễn'
-    }));
-  };
-
   return (
     <div className="min-h-screen text-slate-800 antialiased font-sans">
       {currentView === 'welcome' && (
@@ -91,7 +83,6 @@ export default function App() {
           currentTeacher={activeTeacher}
           tasks={tasks}
           onExit={() => setCurrentView('welcome')}
-          onRoleSwitch={handleTeacherRoleSwitch}
         />
       )}
 

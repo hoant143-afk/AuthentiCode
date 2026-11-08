@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   BookOpen, Code, Bot, CheckCircle, Save, Send, AlertCircle,
   HelpCircle, MessageSquare, Play, Sparkles, User, RefreshCw, FileText,
-  ClipboardList, Calendar, Clock, CheckCircle2, AlertTriangle, ChevronRight
+  ClipboardList, Calendar, Clock, CheckCircle2, AlertTriangle, ChevronRight, Lock
 } from 'lucide-react';
 import { Student, ClassGroup, AssessmentTask, Submission, TestCaseItem, AILogEntry, TaskAssignment } from '../../types';
 import { api } from '../../services/api';
@@ -71,6 +71,55 @@ export const StudentPortal: React.FC<Props> = ({
   const [isAppealModalOpen, setIsAppealModalOpen] = useState(false);
   const [appealReason, setAppealReason] = useState('');
   const [appealEvidence, setAppealEvidence] = useState('');
+
+  // Individual assignment code verification modal state
+  const [unlockedAssignmentIds, setUnlockedAssignmentIds] = useState<string[]>([]);
+  const [individualCodeModalAssignment, setIndividualCodeModalAssignment] = useState<TaskAssignment | null>(null);
+  const [individualCodeInput, setIndividualCodeInput] = useState('');
+  const [individualCodeError, setIndividualCodeError] = useState('');
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+
+  const handleSelectAssignedItem = (assignment: TaskAssignment, task: AssessmentTask, tabKey: any) => {
+    if (assignment.individualAssignmentCode && !unlockedAssignmentIds.includes(assignment.id)) {
+      setIndividualCodeModalAssignment(assignment);
+      setIndividualCodeInput('');
+      setIndividualCodeError('');
+      return;
+    }
+    setSelectedAssignmentId(assignment.id);
+    setActiveTaskId(task.id);
+    setActiveTab(tabKey);
+  };
+
+  const handleVerifyIndividualCode = async () => {
+    if (!individualCodeModalAssignment) return;
+    if (!individualCodeInput.trim()) {
+      setIndividualCodeError('Vui lòng nhập mã bài tập cá nhân.');
+      return;
+    }
+    setIsVerifyingCode(true);
+    setIndividualCodeError('');
+    try {
+      const res = await api.verifyIndividualAssignmentCode(
+        individualCodeModalAssignment.id,
+        student.id,
+        individualCodeInput.trim()
+      );
+      if (res && res.valid) {
+        setUnlockedAssignmentIds(prev => [...prev, individualCodeModalAssignment.id]);
+        setSelectedAssignmentId(individualCodeModalAssignment.id);
+        setActiveTaskId(individualCodeModalAssignment.taskId);
+        setActiveTab(`task-${individualCodeModalAssignment.taskNumber}` as any);
+        setIndividualCodeModalAssignment(null);
+      } else {
+        setIndividualCodeError(res.message || 'Mã bài tập cá nhân không hợp lệ hoặc bạn không thuộc danh sách được giao.');
+      }
+    } catch (err: any) {
+      setIndividualCodeError(err.message || 'Lỗi khi xác minh mã bài tập cá nhân.');
+    } finally {
+      setIsVerifyingCode(false);
+    }
+  };
 
   // Identify current assigned item and active task
   const currentAssignedItem = assignedItems.find(a => a.assignment?.id === selectedAssignmentId)
@@ -248,12 +297,12 @@ export const StudentPortal: React.FC<Props> = ({
     }
   };
 
-  // Ask Gemini Assistant
+  // Ask Gemini Assistant (Enforcing AI Level Policy)
   const handleSendMessageToAI = async () => {
     if (!chatInput.trim() || !activeTask) return;
 
-    if (activeTask.taskNumber === 1) {
-      showNotification('error', 'Nhiệm vụ 1 cấm sử dụng AI!');
+    if (activeTask.aiLevel === 'T1') {
+      showNotification('error', 'Bài tập mức độ T1 nghiêm cấm sử dụng AI!');
       return;
     }
 
@@ -264,7 +313,13 @@ export const StudentPortal: React.FC<Props> = ({
 
     setIsAiLoading(true);
     try {
-      const res = await api.askGemini(activeTask.taskNumber, userPrompt, student.id, student.studentCode);
+      const res = await api.askGemini({
+        taskId: activeTask.id,
+        taskNumber: activeTask.taskNumber,
+        prompt: userPrompt,
+        studentId: student.id,
+        studentCode: student.studentCode
+      });
       const aiReply = {
         sender: 'ai' as const,
         text: res.reply,
@@ -272,8 +327,8 @@ export const StudentPortal: React.FC<Props> = ({
       };
       setChatMessages(prev => [...prev, aiReply]);
 
-      // If Task 3, record response to state for easy review
-      if (activeTask.taskNumber === 3) {
+      // If Level T3, record response to state for easy review
+      if (activeTask.aiLevel === 'T3') {
         setAiPromptEntered(userPrompt);
         setAiResponseReceived(res.reply);
       }
@@ -305,11 +360,11 @@ export const StudentPortal: React.FC<Props> = ({
         showNotification('error', 'Vui lòng hoàn thành phần Thuật toán / Giả mã.');
         return;
       }
-      if (activeTask.taskNumber === 2 && !fixedPythonCode.trim()) {
-        showNotification('error', 'Vui lòng nhập mã Python sau khi đã sửa lỗi cho Nhiệm vụ 2.');
+      if (activeTask.aiLevel === 'T2' && !fixedPythonCode.trim()) {
+        showNotification('error', 'Vui lòng nhập mã Python sau khi đã sửa lỗi cho Nhiệm vụ.');
         return;
       }
-      if (activeTask.taskNumber !== 2 && !pythonSourceCode.trim()) {
+      if (activeTask.aiLevel !== 'T2' && !pythonSourceCode.trim()) {
         showNotification('error', 'Vui lòng nhập mã nguồn Python.');
         return;
       }
@@ -351,8 +406,8 @@ export const StudentPortal: React.FC<Props> = ({
           problemAnalysis,
           algorithmPseudocode,
           pythonSourceCode,
-          fixedPythonCode: activeTask.taskNumber === 2 ? fixedPythonCode : undefined,
-          bugExplanations: activeTask.taskNumber === 2 ? bugExplanations : undefined,
+          fixedPythonCode: activeTask.aiLevel === 'T2' ? fixedPythonCode : undefined,
+          bugExplanations: activeTask.aiLevel === 'T2' ? bugExplanations : undefined,
           testCases,
           explanation,
           selfEvaluation: {
@@ -361,7 +416,7 @@ export const StudentPortal: React.FC<Props> = ({
             reflectionNotes: selfNotes
           },
           aiLogs: aiLogsPayload,
-          aiDisclosure: activeTask.taskNumber === 3 ? {
+          aiDisclosure: activeTask.aiLevel === 'T3' ? {
             usedAI: true,
             toolUsed: aiToolUsed,
             promptsCount: chatMessages.filter(m => m.sender === 'user').length,
@@ -527,14 +582,12 @@ export const StudentPortal: React.FC<Props> = ({
                 const isSubmitted = submission?.status === 'submitted' || isGraded;
                 const isDraft = submission?.status === 'draft';
 
+                const isLockedIndividual = Boolean(assignment.individualAssignmentCode && !unlockedAssignmentIds.includes(assignment.id));
+
                 return (
                   <button
                     key={assignment.id}
-                    onClick={() => {
-                      setSelectedAssignmentId(assignment.id);
-                      setActiveTaskId(task.id);
-                      setActiveTab(tabKey);
-                    }}
+                    onClick={() => handleSelectAssignedItem(assignment, task, tabKey)}
                     className={`w-full text-left px-3 py-2 rounded-xl text-xs font-medium flex items-center justify-between transition-colors ${
                       isSelected
                         ? 'bg-emerald-600 text-white shadow-xs'
@@ -548,6 +601,11 @@ export const StudentPortal: React.FC<Props> = ({
                         {task.aiLevel || `NV${task.taskNumber}`}
                       </span>
                       <span className="truncate">NV {task.taskNumber}: {task.title.split(':')[1] || task.title}</span>
+                      {isLockedIndividual && (
+                        <span className={`text-[9px] px-1 py-0.5 rounded font-mono ${isSelected ? 'bg-amber-400 text-slate-900' : 'bg-amber-100 text-amber-800'}`}>
+                          Mã riêng
+                        </span>
+                      )}
                     </div>
                     {isGraded ? (
                       <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isSelected ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'}`}>
@@ -1113,9 +1171,9 @@ export const StudentPortal: React.FC<Props> = ({
                 />
               </div>
 
-              {/* CARD 3: CODE WORKSPACE (DIFFERENT BY TASK) */}
-              {activeTask.taskNumber === 2 ? (
-                /* TASK 2 CODE WORKSPACE: BUGGY VS FIXED + BUG EXPLANATION */
+              {/* CARD 3: CODE WORKSPACE (DIFFERENT BY TASK/AI LEVEL) */}
+              {(activeTask.aiLevel === 'T2' || Boolean(activeTask.starterCode)) ? (
+                /* TASK T2 / CODE WORKSPACE: BUGGY VS FIXED + BUG EXPLANATION */
                 <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
@@ -1306,25 +1364,25 @@ export const StudentPortal: React.FC<Props> = ({
                   <span className="text-[11px] text-slate-400">Tiêu chí R6 (10%)</span>
                 </div>
 
-                {activeTask.taskNumber === 1 ? (
-                  /* TASK 1: STRICT AI BLOCK */
+                {activeTask.aiLevel === 'T1' ? (
+                  /* TASK LEVEL T1: STRICT AI BLOCK */
                   <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-xs text-red-900 flex items-start gap-3">
                     <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
                     <div className="space-y-1">
-                      <h4 className="font-bold text-red-950">Chức năng AI bị khóa ở Nhiệm vụ 1</h4>
+                      <h4 className="font-bold text-red-950">Chức năng AI bị khóa ở cấp độ T1</h4>
                       <p className="text-red-800 leading-relaxed">
-                        Nhiệm vụ 1 được thiết kế để xác thực năng lực lập trình hoàn toàn độc lập của học sinh THCS. Hệ thống không kích hoạt trợ lý Gemini. Học sinh cam kết không sử dụng công cụ AI bên ngoài để làm bài.
+                        Nhiệm vụ này ở Cấp độ T1 được thiết kế để xác thực năng lực lập trình hoàn toàn độc lập của học sinh THCS. Hệ thống không kích hoạt trợ lý Gemini. Học sinh cam kết không sử dụng công cụ AI bên ngoài để làm bài.
                       </p>
                     </div>
                   </div>
                 ) : (
-                  /* TASK 2 & 3: INTERACTIVE AI ASSISTANT */
+                  /* TASK LEVEL T2 & T3: INTERACTIVE AI ASSISTANT */
                   <div className="space-y-4">
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-bold text-slate-800 flex items-center gap-1.5">
                           <Bot className="w-4 h-4 text-emerald-600" />
-                          Trợ lý Sư phạm Gemini ({activeTask.aiModeLabel})
+                          Trợ lý Sư phạm Gemini ({activeTask.aiModeLabel || (activeTask.aiLevel === 'T2' ? 'Gợi mở Socratic' : 'Hợp tác mở')})
                         </span>
                         <span className="text-slate-500">Mọi tương tác đều được lưu vào biên bản đánh giá</span>
                       </div>
@@ -1335,7 +1393,7 @@ export const StudentPortal: React.FC<Props> = ({
                           <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 text-xs p-4 space-y-1">
                             <MessageSquare className="w-6 h-6 text-slate-300" />
                             <p>
-                              {activeTask.taskNumber === 2
+                              {activeTask.aiLevel === 'T2'
                                 ? 'Đặt câu hỏi gợi ý khi gặp khó khăn. AI sẽ hỏi gợi mở theo phương pháp Socratic, không cho mã giải trực tiếp.'
                                 : 'Nhập yêu cầu để AI đề xuất giải pháp. Sau đó em hãy kiểm chứng, phản biện và cải tiến mã nguồn.'}
                             </p>
@@ -1373,7 +1431,7 @@ export const StudentPortal: React.FC<Props> = ({
                           onChange={e => setChatInput(e.target.value)}
                           onKeyDown={e => e.key === 'Enter' && handleSendMessageToAI()}
                           placeholder={
-                            activeTask.taskNumber === 2
+                            activeTask.aiLevel === 'T2'
                               ? 'Ví dụ: Tại sao khi n = 1 thì chương trình lại in ra 0 0?'
                               : 'Ví dụ: Hãy viết chương trình Python tính tổng số trang đọc trong n ngày...'
                           }
@@ -1390,8 +1448,8 @@ export const StudentPortal: React.FC<Props> = ({
                       </div>
                     </div>
 
-                    {/* Task 3 Mandatory Disclosure Fields */}
-                    {activeTask.taskNumber === 3 && (
+                    {/* Task T3 Mandatory Disclosure Fields */}
+                    {activeTask.aiLevel === 'T3' && (
                       <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-xl space-y-3 text-xs">
                         <div className="flex items-center justify-between">
                           <h4 className="font-bold text-blue-950 flex items-center gap-1.5">
@@ -1807,6 +1865,66 @@ export const StudentPortal: React.FC<Props> = ({
                 className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
               >
                 Gửi đề nghị
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Individual Assignment Code Unlock Modal */}
+      {individualCodeModalAssignment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 bg-amber-100 text-amber-800 rounded-xl">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-bold text-slate-900 text-sm">
+                  Bài Tập Được Giao Riêng Cho Cá Nhân
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Nhiệm vụ này được giáo viên giao riêng cho bạn kèm mã bài tập cá nhân. Vui lòng nhập mã để truy cập.
+                </p>
+              </div>
+            </div>
+
+            {individualCodeError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{individualCodeError}</span>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 block">
+                Mã bài tập cá nhân:
+              </label>
+              <input
+                type="text"
+                value={individualCodeInput}
+                onChange={e => setIndividualCodeInput(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handleVerifyIndividualCode()}
+                placeholder="Ví dụ: INDIV-7821"
+                className="w-full text-xs px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl font-mono focus:outline-hidden focus:ring-2 focus:ring-amber-500"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                onClick={() => setIndividualCodeModalAssignment(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+              >
+                Đóng
+              </button>
+              <button
+                onClick={handleVerifyIndividualCode}
+                disabled={isVerifyingCode || !individualCodeInput.trim()}
+                className="px-5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                {isVerifyingCode ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : null}
+                Xác thực & Mở bài
               </button>
             </div>
           </div>

@@ -1,0 +1,25 @@
+{
+  "system": "AuthentiCode Demo Seed",
+  "version": "1.0.0",
+  "description": "Dữ liệu mẫu chuẩn hóa dành cho môi trường thử nghiệm và giảng dạy thực hành (không chứa dữ liệu cá nhân thật hoặc mật khẩu)",
+  "classes": [
+    {
+      "id": "class-8a1",
+      "name": "Lớp 8A1",
+      "grade": 8,
+      "academicYear": "2025-2026",
+      "classCode": "8A1-2026",
+      "teacherName": "Thầy Nguyễn Văn An",
+      "studentCount": 5
+    },
+    {
+      "id": "class-8a2",
+      "name": "Lớp 8A2",
+      "grade": 8,
+      "academicYear": "2025-2026",
+      "classCode": "8A2-2026",
+      "teacherName": "Thầy Nguyễn Văn An",
+      "studentCount": 3
+    }
+  ]
+}

@@ -1,57 +1,104 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    function isSignedIn() { return request.auth != null; }
-    
-    function isAdmin() { 
-      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    function isTeacher() { 
-      return isSignedIn() && exists(/databases/$(database)/documents/teachers/$(request.auth.uid));
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isApprovedUser() {
+      return isEmailVerified() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             getUserData().status == 'approved' && 
+             getUserData().isApproved == true;
+    }
+
+    function isAdmin() {
+      return isApprovedUser() && 
+             (getUserData().role == 'admin' || 
+              request.auth.token.email in ['nhulun7903@gmail.com', 'admin@authenticode.edu.vn']);
+    }
+
+    function isTeacher() {
+      return isApprovedUser() && 
+             (getUserData().role in ['teacher', 'second_grader', 'admin'] || 
+              request.auth.token.email in ['nhulun7903@gmail.com', 'admin@authenticode.edu.vn']);
+    }
+
+    // Default deny all
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // Health check endpoint for connection verification (contains no private data)
+    match /test/connection {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // User profiles: Teachers/Admins
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      // Users can register their own profile initially as pending/unapproved
+      allow create: if isSignedIn() && request.auth.uid == userId && 
+                      request.resource.data.status == 'pending' && 
+                      request.resource.data.isApproved == false;
+      // Only Admin can update user role, status, or approval
+      allow update, delete: if isAdmin();
+    }
+
+    // Classes: strictly teacher/admin only
+    match /classes/{classId} {
+      allow read, write: if isTeacher();
+    }
+
+    // Students: strictly teacher/admin only (protects student rosters, session/individual codes)
+    match /students/{studentId} {
+      allow read, write: if isTeacher();
+    }
+
+    // Tasks Bank
     match /tasks/{taskId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin() || isTeacher();
+      allow write: if isTeacher();
     }
 
+    // Assignments
     match /assignments/{assignmentId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin() || isTeacher();
+      allow write: if isTeacher();
     }
-    
+
+    // Submissions: Only owner student or teacher/admin
     match /submissions/{submissionId} {
-      allow read: if isSignedIn() && (resource.data.studentId == request.auth.uid || isAdmin() || isTeacher());
-      allow create: if isSignedIn();
-      allow update: if isSignedIn() && (resource.data.studentId == request.auth.uid || isAdmin() || isTeacher());
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow delete: if isAdmin();
     }
 
-    match /classes/{classId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() || isTeacher();
-    }
-
-    match /students/{studentId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() || isTeacher();
-    }
-
+    // Evaluations & Oral defense notes: teacher/admin only
     match /evaluations/{evaluationId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() || isTeacher();
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isTeacher();
     }
 
+    // Appeals
     match /appeals/{appealId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() || isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isSignedIn();
+      allow update, delete: if isTeacher();
     }
-    
+
+    // Audit logs: admin only
     match /auditLogs/{logId} {
       allow read: if isAdmin();
       allow write: if false;

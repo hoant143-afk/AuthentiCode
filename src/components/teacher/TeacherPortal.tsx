@@ -23,14 +23,12 @@ interface Props {
   };
   tasks: AssessmentTask[];
   onExit: () => void;
-  onRoleSwitch?: (role: string) => void;
 }
 
 export const TeacherPortal: React.FC<Props> = ({
   currentTeacher,
   tasks,
-  onExit,
-  onRoleSwitch
+  onExit
 }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'classes' | 'tasks' | 'submissions' | 'grading' | 'double-grading' | 'appeals' | 'audit' | 'users'>('dashboard');
 
@@ -152,7 +150,7 @@ export const TeacherPortal: React.FC<Props> = ({
 
   const handleUpdateUserStatus = async (userId: string, newStatus: string) => {
     try {
-      await api.updateUserStatus(userId, newStatus, currentTeacher.id);
+      await api.updateUserStatus(userId, newStatus);
       showNotification('success', `Đã cập nhật trạng thái tài khoản thành công (${newStatus})!`);
       loadAllData();
     } catch (err: any) {
@@ -162,7 +160,7 @@ export const TeacherPortal: React.FC<Props> = ({
 
   const handleUpdateUserRole = async (userId: string, newRole: string) => {
     try {
-      await api.updateUserRole(userId, newRole, currentTeacher.id);
+      await api.updateUserRole(userId, newRole);
       showNotification('success', `Đã phân quyền thành công (${newRole})!`);
       loadAllData();
     } catch (err: any) {
@@ -231,7 +229,7 @@ export const TeacherPortal: React.FC<Props> = ({
 
     // Also fetch double-grading comparison
     try {
-      const dg = await api.getDoubleGrading(sub.id, currentTeacher.id);
+      const dg = await api.getDoubleGrading(sub.id);
       setDoubleGradingData(dg);
     } catch (e) {
       console.error(e);
@@ -319,7 +317,7 @@ export const TeacherPortal: React.FC<Props> = ({
       loadAllData();
 
       // Refresh double grading
-      const dg = await api.getDoubleGrading(selectedSubmission.id, currentTeacher.id);
+      const dg = await api.getDoubleGrading(selectedSubmission.id);
       setDoubleGradingData(dg);
     } catch (err: any) {
       showNotification('error', err.message || 'Lỗi lưu đánh giá.');
@@ -416,7 +414,7 @@ export const TeacherPortal: React.FC<Props> = ({
         reconciledBy: currentTeacher.name
       });
       showNotification('success', 'Đã lưu điểm thống nhất của hội đồng chấm!');
-      const dg = await api.getDoubleGrading(selectedSubmission.id, currentTeacher.id);
+      const dg = await api.getDoubleGrading(selectedSubmission.id);
       setDoubleGradingData(dg);
       loadAllData();
     } catch (err: any) {
@@ -448,37 +446,6 @@ export const TeacherPortal: React.FC<Props> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-3">
-          {/* Role Switcher for Testing */}
-          {onRoleSwitch && (
-            <div className="hidden sm:flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs">
-              <button
-                onClick={() => onRoleSwitch('teacher')}
-                className={`px-2.5 py-1 rounded-lg font-medium transition-colors ${
-                  currentTeacher.role === 'teacher' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Giáo viên 1
-              </button>
-              <button
-                onClick={() => onRoleSwitch('second_grader')}
-                className={`px-2.5 py-1 rounded-lg font-medium transition-colors ${
-                  currentTeacher.role === 'second_grader' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Giám khảo 2 (Độc lập)
-              </button>
-              <button
-                onClick={() => onRoleSwitch('admin')}
-                className={`px-2.5 py-1 rounded-lg font-medium transition-colors ${
-                  currentTeacher.role === 'admin' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Admin
-              </button>
-            </div>
-          )}
-
-
           {/* Test bench */}
           <button
             onClick={() => setIsTestBenchOpen(true)}
@@ -996,24 +963,22 @@ export const TeacherPortal: React.FC<Props> = ({
                   <div className="space-y-3">
                     <div className="bg-slate-900 p-3.5 rounded-xl text-slate-100 space-y-1">
                       <span className="font-bold text-emerald-400 block text-xs font-mono">
-                        {selectedSubmission.taskNumber === 2 ? 'Mã nguồn sau khi sửa lỗi:' : 'Mã nguồn Python của học sinh:'}
+                        {currentVersion?.fixedPythonCode ? 'Mã nguồn sau khi sửa lỗi:' : 'Mã nguồn Python của học sinh:'}
                       </span>
                       <pre className="text-xs font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed max-h-56">
-                        {selectedSubmission.taskNumber === 2
-                          ? currentVersion?.fixedPythonCode || currentVersion?.pythonSourceCode
-                          : currentVersion?.pythonSourceCode}
+                        {currentVersion?.fixedPythonCode || currentVersion?.pythonSourceCode}
                       </pre>
                     </div>
 
-                    {selectedSubmission.taskNumber === 2 && currentVersion?.bugExplanations && (
+                    {currentVersion?.bugExplanations && (
                       <div className="bg-amber-50 p-3.5 rounded-xl border border-amber-200 space-y-1 text-slate-800">
-                        <span className="font-bold text-amber-900 block">Giải thích 2 lỗi logic của học sinh:</span>
+                        <span className="font-bold text-amber-900 block">Giải thích lỗi logic của học sinh:</span>
                         <p className="whitespace-pre-wrap">{currentVersion.bugExplanations}</p>
                       </div>
                     )}
 
-                    {/* AI Disclosure in Task 3 */}
-                    {selectedSubmission.taskNumber === 3 && currentVersion?.aiDisclosure && (
+                    {/* AI Disclosure */}
+                    {currentVersion?.aiDisclosure && (
                       <div className="bg-blue-50 p-3.5 rounded-xl border border-blue-200 space-y-1 text-slate-800">
                         <span className="font-bold text-blue-900 block">Khai báo sử dụng AI:</span>
                         <p><strong>Công cụ:</strong> {currentVersion.aiDisclosure.toolUsed}</p>
@@ -1502,6 +1467,10 @@ export const TeacherPortal: React.FC<Props> = ({
                     <div className="text-xs text-slate-600 space-y-0.5">
                       <p>Khối {c.grade} · Năm học: {c.academicYear}</p>
                       <p>Giáo viên phụ trách: {c.teacherName}</p>
+                      <p className="pt-1">
+                        <span className="font-semibold text-slate-700">Mã lớp học: </span>
+                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-900 rounded font-mono font-bold text-xs">{c.classCode || 'Chưa tạo'}</span>
+                      </p>
                     </div>
 
                     <div className="flex items-center gap-2 pt-2 border-t border-slate-200">

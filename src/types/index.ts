@@ -25,6 +25,7 @@ export interface ClassGroup {
   name: string; // e.g. "Lớp 8A1"
   grade: number; // 8
   academicYear: string; // 2025-2026
+  classCode: string; // Mã tham gia chung của cả lớp, e.g. "8A1-2026"
   teacherId: string;
   teacherName: string;
   studentCount: number;

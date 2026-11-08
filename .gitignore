@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Operational database and sensitive data files
+data/authenticode_db.json
+data/*.bak
+data/*.backup*
+data/operational_*.json
+
