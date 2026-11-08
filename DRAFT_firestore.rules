@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Helper functions
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function isVerified() { return request.auth.token.email_verified == true; }
+    
+    // Admin check requires lookup
+    function isAdmin() { 
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Secure collections
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow write: if false; // Only via backend admin actions
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    
+    match /submissions/{submissionId} {
+      allow read: if isSignedIn() && (resource.data.studentId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.studentId == request.auth.uid;
+    }
+  }
+}

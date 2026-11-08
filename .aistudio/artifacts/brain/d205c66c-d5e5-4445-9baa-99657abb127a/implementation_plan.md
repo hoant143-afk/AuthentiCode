@@ -1,54 +1,30 @@
-# AuthentiCode – Assessment Platform
+# AuthentiCode Refactoring and Migration Plan
 
-An assessment platform for evaluating junior high school students' Python programming skills in the age of generative AI.
+## Objectives
+1.  Secure the application (Auth, Firestore Rules, API authorization).
+2.  Migrate data from `authenticode_db.json` to Firestore.
+3.  Implement updated student login, assignment logic, and AI-level evaluation.
 
-> [!IMPORTANT]
-> The system requires Firebase for authentication and data storage. I will use Cloud Firestore for persistent storage of student submissions, assessment logs, and teacher evaluations.
+## Phase 1: Security Hardening & Firebase Auth
+-   [ ] Initialize Firebase Auth in `server.ts` and React.
+-   [ ] Implement secure Firestore Security Rules.
+-   [ ] Remove hardcoded admin credentials and credentials in UI.
+-   [ ] Sanitize API endpoints to block unauthorized access.
 
-### 1. Overview & Core Concept
-- **What It Does**: Provides a structured environment for teachers to assign tasks, and for students to submit Python solutions, with integrated AI support and assessment rubrics.
-- **Target Audience / Persona**: Junior high school teachers (evaluating) and students (learning/submitting).
-- **Key Value**: Provides a structured, verified evaluation process for Python programming, assessing both the final code and the process (analysis, AI usage, explanation).
+## Phase 2: Data Migration
+-   [ ] Develop migration script to transform `authenticode_db.json` into Firestore collections (users, classes, students, tasks, assignments, submissions, evaluations, auditLogs).
+-   [ ] Verify data integrity post-migration.
+-   [ ] Update `server.ts` to use Firestore repository instead of local JSON file.
 
-### 2. User Experience & Visual Design
-- **Key User Flows**:
-    - Teacher: Login -> Dashboard -> Create Class -> Create Task -> Assign -> Grade Submissions -> Vistualize Reports.
-    - Student: Login with Session Code -> View Tasks -> Submit Code/Logs -> Receive Feedback.
-- **Visual Identity & Theme**:
-    - Professional, clean, modern educational tool.
-    - Colors: White background, soft green/blue accents (Tailwind: `slate-50`, `emerald-500`, `blue-600`).
-    - Typography: Clean sans-serif (e.g., Inter/system).
-- **Interactive Feedback**: Loading states, submission confirmation, clear error messages.
+## Phase 3: Student Portal & Assignment Refactoring
+-   [ ] Update student portal for class-based login.
+-   [ ] Implement Assignment logic (General vs Individual).
+-   [ ] Update API to validate access rights.
 
-### 3. Key Product Decisions & Trade-Offs
-- **Decision 1**: Firebase Auth + Firestore.
-    - *Chosen Approach*: Managed Firebase services.
-    - *Why*: Reliable, scalable, secure, and fits within requirements.
-- **Decision 2**: Server-side AI Calls.
-    - *Chosen Approach*: Gemini API via server-side endpoints.
-    - *Why*: Security (no client-side API keys), better control.
+## Phase 4: Feature Refinement
+-   [ ] Update assessment logic to rely on `aiLevel` property.
+-   [ ] Finalize UI/UX for evaluation features (Rubric, AI Logs, Oral Defense).
 
-### 4. Technical Architecture
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       Client (React)                        │
-├───────────────────────┬────────────┬────────────────────────┤
-│     Auth & State      │  UI Views  │  Assessment & Test UI  │
-└───────────────────────┴─────┬──────┴────────────────────────┘
-                              │ API Calls
-┌─────────────────────────────▼───────────────────────────────┐
-│                    Server (Express / Vite)                  │
-├───────────────────────┬────────────┬────────────────────────┤
-│     Gemini API Proxy  │ Auth Check │   Firestore Gateway    │
-└───────────────────────┴─────┬──────┴────────────────────────┘
-                              │ DB Ops
-┌─────────────────────────────▼───────────────────────────────┐
-│                    Firebase (Auth / Firestore)              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-- **Data Model**:
-    - `users`: (Roles: Admin, Teacher, Student)
-    - `classes`: (Class info, teacherRef, studentList)
-    - `tasks`: (Task details, type, AI rules)
-    - `submissions`: (StudentRef, TaskRef, Code, Logs, AI interaction, RubricScore)
+## Phase 5: Verification & Testing
+-   [ ] Execute the requested 10-point test checklist.
+-   [ ] Report on security and functional status.

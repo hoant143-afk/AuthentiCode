@@ -1,90 +1,60 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    function isSignedIn() { return request.auth != null; }
+    
+    function isAdmin() { 
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
 
-    // Default deny catch-all
+    function isTeacher() { 
+      return isSignedIn() && exists(/databases/$(database)/documents/teachers/$(request.auth.uid));
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
 
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isAdmin() {
-      return isSignedIn() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'Bongnguyen446@gmail.com'
-      );
-    }
-
-    function isTeacher() {
-      return isSignedIn() && (
-        isAdmin() ||
-        exists(/databases/$(database)/documents/teachers/$(request.auth.uid))
-      );
-    }
-
-    // Tasks: Published/assigned can be read by signed in users or clients, write by teachers/admin
     match /tasks/{taskId} {
-      allow read: if true;
-      allow write: if isTeacher();
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isTeacher();
     }
 
-    // Assignments: Read allowed to check deadlines and tasks, write by teachers
     match /assignments/{assignmentId} {
-      allow read: if true;
-      allow write: if isTeacher();
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isTeacher();
     }
-
-    // Classes: Read allowed to view class info, write by teachers
-    match /classes/{classId} {
-      allow read: if true;
-      allow write: if isTeacher();
-    }
-
-    // Students: Read allowed to verify session code, write by teachers
-    match /students/{studentId} {
-      allow read: if true;
-      allow write: if isTeacher();
-    }
-
-    // Submissions: Students can create/update draft or final; teachers can read and update status
+    
     match /submissions/{submissionId} {
-      allow read: if true;
-      allow create, update: if true; // Managed and authenticated via server-side session tokens
-      allow delete: if isTeacher();
+      allow read: if isSignedIn() && (resource.data.studentId == request.auth.uid || isAdmin() || isTeacher());
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (resource.data.studentId == request.auth.uid || isAdmin() || isTeacher());
     }
 
-    // Evaluations: Read allowed, write by teachers or double graders
+    match /classes/{classId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    match /students/{studentId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isTeacher();
+    }
+
     match /evaluations/{evaluationId} {
-      allow read: if true;
-      allow write: if isTeacher();
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isTeacher();
     }
 
-    // Appeals: Created by students, read/write by teachers
     match /appeals/{appealId} {
-      allow read: if true;
-      allow create: if true;
-      allow update, delete: if isTeacher();
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
     }
-
-    // Audit logs: Append-only or teacher read
+    
     match /auditLogs/{logId} {
-      allow read: if isTeacher();
-      allow create: if true;
-      allow update, delete: if false;
-    }
-
-    // Admins and teachers authorization rosters
-    match /admins/{adminId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin();
-    }
-
-    match /teachers/{teacherId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow read: if isAdmin();
+      allow write: if false;
     }
   }
 }
