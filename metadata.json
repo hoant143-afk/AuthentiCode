@@ -1,0 +1,6 @@
+{
+  "name": "AuthentiCode",
+  "description": "Hệ thống hỗ trợ đánh giá xác thực năng lực lập trình Python của học sinh THCS trong bối cảnh GenAI - Học lập trình, Hiểu bản chất, Làm chủ AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

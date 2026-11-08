@@ -1,0 +1,156 @@
+{
+  "entities": {
+    "Task": {
+      "title": "Task",
+      "description": "Nhiệm vụ đánh giá năng lực lập trình Python",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 200 },
+        "aiLevel": { "type": "string", "enum": ["T1", "T2", "T3"] },
+        "status": { "type": "string", "enum": ["draft", "published", "assigned"] },
+        "problemStatement": { "type": "string", "maxLength": 10000 },
+        "authorId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["title", "aiLevel", "status"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Đợt giao bài tập cho lớp học hoặc cá nhân học sinh",
+      "type": "object",
+      "properties": {
+        "taskId": { "type": "string", "maxLength": 128 },
+        "taskTitle": { "type": "string", "maxLength": 200 },
+        "aiLevel": { "type": "string", "enum": ["T1", "T2", "T3"] },
+        "targetType": { "type": "string", "enum": ["single_class", "multi_class", "individual_students"] },
+        "startTime": { "type": "string" },
+        "dueTime": { "type": "string" },
+        "teacherNotes": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["assigned", "closed"] }
+      },
+      "required": ["taskId", "taskTitle", "startTime", "status"]
+    },
+    "ClassGroup": {
+      "title": "ClassGroup",
+      "description": "Lớp học THCS",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 50 },
+        "grade": { "type": "string", "maxLength": 10 },
+        "studentCount": { "type": "number" },
+        "teacherId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["name", "grade"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Học sinh THCS với mã phiên cá nhân",
+      "type": "object",
+      "properties": {
+        "fullName": { "type": "string", "maxLength": 100 },
+        "studentCode": { "type": "string", "maxLength": 20 },
+        "classId": { "type": "string", "maxLength": 128 },
+        "sessionCode": { "type": "string", "maxLength": 30 },
+        "sessionExpiry": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["fullName", "studentCode", "classId", "sessionCode"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "Bài làm và lịch sử phiên bản của học sinh",
+      "type": "object",
+      "properties": {
+        "taskId": { "type": "string", "maxLength": 128 },
+        "assignmentId": { "type": "string", "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 100 },
+        "studentCode": { "type": "string", "maxLength": 20 },
+        "classId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["draft", "submitted", "graded", "oral_defense_pending"] },
+        "currentVersion": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["taskId", "studentId", "status"]
+    },
+    "Evaluation": {
+      "title": "Evaluation",
+      "description": "Kết quả đánh giá Rubric và vấn đáp của giáo viên",
+      "type": "object",
+      "properties": {
+        "submissionId": { "type": "string", "maxLength": 128 },
+        "graderId": { "type": "string", "maxLength": 128 },
+        "graderName": { "type": "string", "maxLength": 100 },
+        "graderRole": { "type": "string", "enum": ["primary_teacher", "second_grader", "system_admin"] },
+        "weightedScore10": { "type": "number" },
+        "generalFeedback": { "type": "string", "maxLength": 5000 },
+        "gradedAt": { "type": "string" }
+      },
+      "required": ["submissionId", "graderId", "weightedScore10"]
+    },
+    "Appeal": {
+      "title": "Appeal",
+      "description": "Yêu cầu phúc khảo của học sinh",
+      "type": "object",
+      "properties": {
+        "submissionId": { "type": "string", "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentReason": { "type": "string", "maxLength": 2000 },
+        "status": { "type": "string", "enum": ["pending", "reviewed", "resolved", "rejected"] },
+        "submittedAt": { "type": "string" }
+      },
+      "required": ["submissionId", "studentId", "studentReason", "status"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Nhật ký hệ thống",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string" },
+        "actorId": { "type": "string", "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 100 },
+        "actorRole": { "type": "string" },
+        "action": { "type": "string", "maxLength": 100 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 2000 }
+      },
+      "required": ["timestamp", "action"]
+    }
+  },
+  "firestore": {
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Ngân hàng đề và nhiệm vụ đánh giá Python"
+    },
+    "/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Các đợt giao bài tập cho lớp học"
+    },
+    "/classes/{classId}": {
+      "schema": { "$ref": "#/entities/ClassGroup" },
+      "description": "Danh sách các lớp học"
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Danh sách học sinh và mã phiên xác thực"
+    },
+    "/submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/Submission" },
+      "description": "Bài nộp và các phiên bản bài làm của học sinh"
+    },
+    "/evaluations/{evaluationId}": {
+      "schema": { "$ref": "#/entities/Evaluation" },
+      "description": "Kết quả đánh giá Rubric và vấn đáp miệng"
+    },
+    "/appeals/{appealId}": {
+      "schema": { "$ref": "#/entities/Appeal" },
+      "description": "Đơn phúc khảo kết quả của học sinh"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Nhật ký an ninh và lịch sử thay đổi của hệ thống"
+    }
+  }
+}
