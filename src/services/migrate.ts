@@ -1,4 +1,4 @@
-import { collection, addDoc, getDocs, deleteDoc, doc } from 'firebase/firestore';
+import { collection, setDoc, doc } from 'firebase/firestore';
 import { db } from './firebase';
 import data from '../../data/authenticode_db.json';
 
@@ -20,16 +20,14 @@ export async function migrateData() {
     console.log(`Migrating ${col.name}...`);
     const colRef = collection(db, col.name);
     
-    // Clear existing to avoid duplicates in this simple migration
-    const snapshot = await getDocs(colRef);
-    for (const d of snapshot.docs) {
-      await deleteDoc(doc(db, col.name, d.id));
-    }
-
-    // Add new
+    // Migrate preserving document IDs, without deleting existing collection records
     for (const item of col.data) {
-      await addDoc(colRef, item);
+      if (!item.id) {
+        console.warn(`Bỏ qua tài liệu không có ID trong ${col.name}`);
+        continue;
+      }
+      await setDoc(doc(db, col.name, item.id), item, { merge: true });
     }
   }
-  console.log('Migration completed.');
+  console.log('Migration completed safely without deleting existing documents.');
 }

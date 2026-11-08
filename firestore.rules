@@ -22,15 +22,11 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isApprovedUser() && 
-             (getUserData().role == 'admin' || 
-              request.auth.token.email in ['nhulun7903@gmail.com', 'admin@authenticode.edu.vn']);
+      return isApprovedUser() && getUserData().role == 'admin';
     }
 
     function isTeacher() {
-      return isApprovedUser() && 
-             (getUserData().role in ['teacher', 'second_grader', 'admin'] || 
-              request.auth.token.email in ['nhulun7903@gmail.com', 'admin@authenticode.edu.vn']);
+      return isApprovedUser() && getUserData().role in ['teacher', 'second_grader', 'admin'];
     }
 
     // Default deny all

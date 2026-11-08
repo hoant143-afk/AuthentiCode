@@ -86,6 +86,8 @@ class FirestoreRepository<T> {
 export const UserRepo = new FirestoreRepository<any>(COLLECTIONS.USERS);
 export const TaskRepo = new FirestoreRepository<any>(COLLECTIONS.TASKS);
 export const AssignmentRepo = new FirestoreRepository<any>(COLLECTIONS.ASSIGNMENTS);
+export const ClassRepo = new FirestoreRepository<any>(COLLECTIONS.CLASSES);
+export const StudentRepo = new FirestoreRepository<any>(COLLECTIONS.STUDENTS);
 export const SubmissionRepo = new FirestoreRepository<any>(COLLECTIONS.SUBMISSIONS);
 export const EvaluationRepo = new FirestoreRepository<any>(COLLECTIONS.EVALUATIONS);
 export const AppealRepo = new FirestoreRepository<any>(COLLECTIONS.APPEALS);

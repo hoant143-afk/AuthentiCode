@@ -67,11 +67,11 @@ export const api = {
   },
 
   // Verify individual assignment code
-  async verifyIndividualAssignmentCode(assignmentId: string, individualCode: string, studentId?: string) {
+  async verifyIndividualAssignmentCode(assignmentId: string, studentId: string, individualCode: string) {
     const res = await fetch('/api/assignments/verify-individual-code', {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ assignmentId, individualCode, studentId })
+      body: JSON.stringify({ assignmentId, studentId, individualCode })
     });
     const data = await res.json();
     if (!res.ok) {

@@ -14,27 +14,90 @@ export const FirebaseGuideModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const sampleRules = `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Chặn truy cập mặc định
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isApprovedUser() {
+      return isEmailVerified() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             getUserData().status == 'approved' && 
+             getUserData().isApproved == true;
+    }
+
+    function isAdmin() {
+      return isApprovedUser() && getUserData().role == 'admin';
+    }
+
+    function isTeacher() {
+      return isApprovedUser() && getUserData().role in ['teacher', 'second_grader', 'admin'];
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
-    
-    // Phân quyền AuthentiCode
-    match /classes/{classId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.token.role == 'teacher';
+
+    match /test/connection {
+      allow read: if true;
+      allow write: if false;
     }
-    
-    match /submissions/{subId} {
-      allow read: if request.auth != null && (
-        resource.data.studentId == request.auth.uid || 
-        request.auth.token.role in ['teacher', 'admin', 'second_grader']
-      );
-      allow create: if request.auth != null && request.resource.data.studentId == request.auth.uid;
-      allow update: if request.auth != null && (
-        (resource.data.studentId == request.auth.uid && request.resource.data.status == 'draft') ||
-        request.auth.token.role in ['teacher', 'admin']
-      );
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && request.auth.uid == userId && 
+                      request.resource.data.status == 'pending' && 
+                      request.resource.data.isApproved == false;
+      allow update, delete: if isAdmin();
+    }
+
+    match /classes/{classId} {
+      allow read, write: if isTeacher();
+    }
+
+    match /students/{studentId} {
+      allow read, write: if isTeacher();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isSignedIn();
+      allow write: if isTeacher();
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if isSignedIn();
+      allow write: if isTeacher();
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    match /evaluations/{evaluationId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isTeacher();
+    }
+
+    match /appeals/{appealId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isSignedIn();
+      allow update, delete: if isTeacher();
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
     }
   }
 }`;

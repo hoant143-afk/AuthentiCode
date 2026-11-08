@@ -171,7 +171,12 @@ function saveDatabase() {
 }
 
 // Server Session Token Security (HMAC-SHA256)
-const SERVER_SESSION_SECRET = process.env.SESSION_SECRET || 'authenticode-secure-hmac-secret-2026';
+// Phase 1, Requirement 6: Must not use static hardcoded secret. Generate random bytes if not set in environment.
+const SERVER_SESSION_SECRET = process.env.SESSION_SECRET || (() => {
+  const generated = crypto.randomBytes(32).toString('hex');
+  process.env.SESSION_SECRET = generated;
+  return generated;
+})();
 
 function generateServerSessionToken(user: any): string {
   const payload = JSON.stringify({
@@ -201,9 +206,66 @@ function verifyServerSessionToken(token: string): any | null {
   }
 }
 
+// Phase 1, Requirement 3: Cryptographically signed student session tokens with 24h expiration
+function generateStudentSessionToken(student: any, classId: string): string {
+  const payload = JSON.stringify({
+    studentId: student.id,
+    classId: classId,
+    studentCode: student.studentCode,
+    fullName: student.fullName,
+    role: 'student',
+    exp: Date.now() + 24 * 60 * 60 * 1000 // 24h validity
+  });
+  const signature = crypto.createHmac('sha256', SERVER_SESSION_SECRET).update(payload).digest('hex');
+  return Buffer.from(payload).toString('base64') + '.' + signature;
+}
+
+function verifyStudentSessionToken(token: string): any | null {
+  if (!token || !token.includes('.')) return null;
+  const [b64, signature] = token.split('.');
+  try {
+    const payload = Buffer.from(b64, 'base64').toString('utf-8');
+    const expectedSig = crypto.createHmac('sha256', SERVER_SESSION_SECRET).update(payload).digest('hex');
+    if (signature !== expectedSig) return null;
+    const parsed = JSON.parse(payload);
+    if (parsed.exp < Date.now()) return null;
+    if (parsed.role !== 'student') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 // Server-side RBAC Middleware
 interface AuthenticatedRequest extends express.Request {
   user?: any;
+  studentAuth?: {
+    studentId: string;
+    classId: string;
+    studentCode: string;
+    fullName: string;
+    role: 'student';
+    exp: number;
+  };
+}
+
+function resolveOptionalAuth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  const studentHeader = req.headers['x-student-token'] as string;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : studentHeader;
+
+  if (token) {
+    const teacherUser = verifyServerSessionToken(token);
+    if (teacherUser) {
+      req.user = teacherUser;
+    } else {
+      const studentData = verifyStudentSessionToken(token);
+      if (studentData) {
+        req.studentAuth = studentData;
+      }
+    }
+  }
+  next();
 }
 
 function requireTeacherAuth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
@@ -237,6 +299,43 @@ function requireAdminAuth(req: AuthenticatedRequest, res: express.Response, next
   next();
 }
 
+function requireStudentAuth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  const studentHeader = req.headers['x-student-token'] as string;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : studentHeader;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Yêu cầu đăng nhập vào lớp học để thực hiện thao tác này.' });
+  }
+  const studentData = verifyStudentSessionToken(token);
+  if (!studentData) {
+    return res.status(401).json({ error: 'Phiên học sinh đã hết hạn hoặc không hợp lệ. Vui lòng tham gia lại lớp.' });
+  }
+  req.studentAuth = studentData;
+  next();
+}
+
+function requireAnyAuth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  const studentHeader = req.headers['x-student-token'] as string;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : studentHeader;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Yêu cầu xác thực tài khoản hoặc phiên học sinh.' });
+  }
+  const teacherUser = verifyServerSessionToken(token);
+  if (teacherUser) {
+    req.user = teacherUser;
+    return next();
+  }
+  const studentData = verifyStudentSessionToken(token);
+  if (studentData) {
+    req.studentAuth = studentData;
+    return next();
+  }
+  return res.status(401).json({ error: 'Phiên làm việc không hợp lệ hoặc đã hết hạn.' });
+}
+
 // Gemini AI client initialization
 function getAiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -261,18 +360,19 @@ async function testFirestoreHealth(): Promise<{ connected: boolean; latencyMs?: 
   try {
     const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/test/connection?key=${firebaseConfig.apiKey}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    // 200/404: connected and responding; 403: connected and actively enforcing security rules
-    if (res.status === 200 || res.status === 404) {
+    // Phase 3, Requirement 6: Only report connected: true if read operation actually succeeds.
+    // HTTP 403 must NOT be considered successful connection.
+    if (res.status === 200) {
       return { connected: true, latencyMs: Date.now() - start };
     }
+    const errData = await res.json().catch(() => ({}));
     if (res.status === 403) {
       return {
-        connected: true,
+        connected: false,
         latencyMs: Date.now() - start,
-        error: 'Đã kết nối trực tuyến tới Cloud Firestore (Database đang kích hoạt Security Rules)'
+        error: 'Chưa cấp quyền đọc/ghi trên Cloud Firestore (HTTP 403 Permission Denied - cần Publish firestore.rules lên database)'
       };
     }
-    const errData = await res.json().catch(() => ({}));
     return {
       connected: false,
       error: errData.error?.message || `HTTP ${res.status}`
@@ -331,21 +431,25 @@ app.post('/api/auth/verify-teacher-token', async (req, res) => {
     const uid = firebaseUser.localId;
     const isEmailVerified = Boolean(firebaseUser.emailVerified);
 
-    // Bootstrap Admins: system admin email or user session email
-    const isBootstrapAdmin = email === 'nhulun7903@gmail.com' || email === 'admin@authenticode.edu.vn';
+    // Phase 1, Requirement 8: Require verified email
+    if (!isEmailVerified) {
+      return res.status(403).json({
+        error: 'Tài khoản email chưa được xác minh trên Firebase. Vui lòng xác thực email của bạn trước khi đăng nhập hệ thống.'
+      });
+    }
 
     let user = db.users.find(u => u.email.toLowerCase() === email || u.id === uid);
 
     if (!user) {
-      // First-time teacher login: create account with pending status (unless bootstrap admin)
+      // Phase 1, Requirement 7: First-time login defaults to pending teacher. Admin must be granted through secure admin process.
       user = {
         id: uid,
         email,
         name: firebaseUser.displayName || email.split('@')[0],
-        role: isBootstrapAdmin ? 'admin' : 'teacher',
-        status: isBootstrapAdmin ? 'approved' : 'pending',
-        isApproved: isBootstrapAdmin,
-        emailVerified: isEmailVerified,
+        role: 'teacher',
+        status: 'pending',
+        isApproved: false,
+        emailVerified: true,
         createdAt: new Date().toISOString()
       };
       db.users.push(user);
@@ -357,16 +461,11 @@ app.post('/api/auth/verify-teacher-token', async (req, res) => {
         actorRole: user.role,
         action: 'ĐĂNG_KÝ_TÀI_KHOẢN_FIREBASE',
         targetId: user.id,
-        details: `Giáo viên ${user.name} (${user.email}) đăng nhập lần đầu qua Firebase Authentication (Trạng thái: ${user.status})`
+        details: `Giáo viên ${user.name} (${user.email}) đăng ký qua Firebase Auth và đang chờ Admin phê duyệt.`
       });
       saveDatabase();
     } else {
-      user.emailVerified = isEmailVerified;
-      if (isBootstrapAdmin && user.role !== 'admin') {
-        user.role = 'admin';
-        user.status = 'approved';
-        user.isApproved = true;
-      }
+      user.emailVerified = true;
       saveDatabase();
     }
 
@@ -517,52 +616,67 @@ app.post('/api/sessions/join-class', (req, res) => {
   } else if (matchingStudents.length === 1) {
     student = matchingStudents[0];
   } else {
-    // Register new student in class roster
-    const newStudentCode = `HS${String(studentsInClass.length + 1).padStart(2, '0')}`;
-    student = {
-      id: `student-${Date.now()}`,
-      classId: classGroup.id,
-      studentCode: newStudentCode,
-      fullName: fullName.trim(),
-      notes: 'Tự tham gia qua mã lớp chung'
-    };
-    db.students.push(student);
-    classGroup.studentCount = db.students.filter(s => s.classId === classGroup.id).length;
-    saveDatabase();
+    // Phase 2, Requirement 7: Do not auto-create student in roster. Must be added by teacher.
+    return res.status(404).json({
+      error: 'Họ và tên của em không có trong danh sách lớp này. Vui lòng liên hệ giáo viên phụ trách để được thêm vào danh sách lớp trước khi vào làm bài.'
+    });
   }
 
-  // Create isolated student session token (valid 24h)
-  const studentToken = Buffer.from(JSON.stringify({
-    studentId: student.id,
-    classId: classGroup.id,
-    studentCode: student.studentCode,
-    fullName: student.fullName,
-    exp: Date.now() + 24 * 60 * 60 * 1000
-  })).toString('base64');
+  // Phase 1, Requirement 3: Cryptographically signed student session token (valid 24h)
+  const studentToken = generateStudentSessionToken(student, classGroup.id);
+
+  // Strip classCode from response to prevent unauthorized leakage
+  const { classCode: _cCode, ...safeClassGroup } = classGroup;
 
   res.json({
     student,
-    classGroup,
+    classGroup: safeClassGroup,
     studentToken,
     tasks: db.tasks
   });
 });
 
-// Verify individual assignment code (Requirement 5)
-app.post('/api/assignments/verify-individual-code', (req, res) => {
-  const { assignmentId, individualCode, studentId } = req.body;
+// Verify individual assignment code (Phase 2, Requirement 4)
+app.post('/api/assignments/verify-individual-code', resolveOptionalAuth, (req: AuthenticatedRequest, res) => {
+  const { assignmentId, studentId, individualCode } = req.body;
+  const effectiveStudentId = req.studentAuth?.studentId || studentId;
+
+  if (!assignmentId || !individualCode || !effectiveStudentId) {
+    return res.status(400).json({ error: 'Thiếu thông tin xác thực bài tập cá nhân.' });
+  }
+
   const assignment = (db.assignments || []).find((a: any) => a.id === assignmentId);
   if (!assignment) {
     return res.status(404).json({ error: 'Bài tập không tồn tại.' });
   }
 
-  if (assignment.targetType === 'individual_students' && assignment.individualAssignmentCode) {
-    if ((individualCode || '').trim().toUpperCase() !== assignment.individualAssignmentCode.trim().toUpperCase()) {
-      return res.status(403).json({ error: 'Mã bài tập cá nhân không hợp lệ.' });
-    }
+  if (assignment.targetType !== 'individual_students' || !assignment.individualAssignmentCode) {
+    return res.json({ valid: true, message: 'Bài tập này áp dụng chung cho lớp, không yêu cầu mã cá nhân.' });
   }
 
-  res.json({ valid: true });
+  // Check student membership in targeted student list
+  if (Array.isArray(assignment.targetStudentIds) && !assignment.targetStudentIds.includes(effectiveStudentId)) {
+    return res.status(403).json({
+      valid: false,
+      error: 'Bạn không thuộc danh sách học sinh được giao bài tập cá nhân này.'
+    });
+  }
+
+  // Check code match
+  const inputCode = (individualCode || '').trim().toUpperCase();
+  const actualCode = (assignment.individualAssignmentCode || '').trim().toUpperCase();
+
+  if (inputCode !== actualCode) {
+    return res.status(403).json({
+      valid: false,
+      error: 'Mã bài tập cá nhân không chính xác. Vui lòng kiểm tra lại mã được giáo viên cấp.'
+    });
+  }
+
+  res.json({
+    valid: true,
+    message: 'Xác thực mã bài tập cá nhân thành công.'
+  });
 });
 
 // Legacy verify session
@@ -591,14 +705,31 @@ app.post('/api/sessions/verify', (req, res) => {
 });
 
 // --- CLASSES & STUDENTS ---
-app.get('/api/classes', (req, res) => {
-  // Public read of basic class names & IDs for student select dropdown
+// Phase 1, Requirement 1 & 9: Do not expose classCode publicly. Only return classCode to the teacher in charge or admin.
+app.get('/api/classes', resolveOptionalAuth, (req: AuthenticatedRequest, res) => {
+  if (req.user && (req.user.role === 'teacher' || req.user.role === 'admin' || req.user.role === 'second_grader')) {
+    const isSystemAdmin = req.user.role === 'admin';
+    return res.json(db.classes.map(c => {
+      const isOwnerTeacher = isSystemAdmin || c.teacherId === req.user.id || c.teacherName === req.user.name;
+      return {
+        id: c.id,
+        name: c.name,
+        grade: c.grade,
+        academicYear: c.academicYear,
+        teacherId: c.teacherId,
+        teacherName: c.teacherName,
+        studentCount: c.studentCount,
+        classCode: isOwnerTeacher ? c.classCode : undefined
+      };
+    }));
+  }
+
+  // Public/Student view: never expose classCode!
   res.json(db.classes.map(c => ({
     id: c.id,
     name: c.name,
     grade: c.grade,
     academicYear: c.academicYear,
-    classCode: c.classCode,
     studentCount: c.studentCount
   })));
 });
@@ -621,8 +752,19 @@ app.post('/api/classes', requireTeacherAuth, (req: AuthenticatedRequest, res) =>
   res.status(201).json(newClass);
 });
 
-app.get('/api/classes/:id/students', (req, res) => {
-  // Students in class
+// Phase 1, Requirement 2 & 9: Protect students list with class ownership check
+app.get('/api/classes/:id/students', requireTeacherAuth, (req: AuthenticatedRequest, res) => {
+  const classGroup = db.classes.find(c => c.id === req.params.id);
+  if (!classGroup) {
+    return res.status(404).json({ error: 'Lớp học không tồn tại.' });
+  }
+
+  const isAdmin = req.user.role === 'admin';
+  const isClassTeacher = classGroup.teacherId === req.user.id || classGroup.teacherName === req.user.name;
+  if (!isAdmin && !isClassTeacher) {
+    return res.status(403).json({ error: 'Bạn không phụ trách lớp này nên không thể xem danh sách học sinh.' });
+  }
+
   const students = db.students.filter(s => s.classId === req.params.id);
   res.json(students);
 });
@@ -890,7 +1032,7 @@ app.delete('/api/tasks/:id', requireTeacherAuth, (req, res) => {
 });
 
 // --- ASSIGNMENTS MANAGEMENT ---
-app.get('/api/assignments', (req, res) => {
+app.get('/api/assignments', requireTeacherAuth, (req, res) => {
   res.json(db.assignments || []);
 });
 
@@ -983,10 +1125,21 @@ app.post('/api/assignments', requireTeacherAuth, (req: AuthenticatedRequest, res
 });
 
 // Student's Assigned Tasks
-app.get('/api/assignments/my-tasks', (req, res) => {
-  const { studentId, classId } = req.query;
+app.get('/api/assignments/my-tasks', resolveOptionalAuth, (req: AuthenticatedRequest, res) => {
+  let effectiveStudentId = '';
+  let effectiveClassId = '';
 
-  if (!studentId || !classId) {
+  if (req.studentAuth) {
+    effectiveStudentId = req.studentAuth.studentId;
+    effectiveClassId = req.studentAuth.classId;
+  } else if (req.user && (req.user.role === 'teacher' || req.user.role === 'admin')) {
+    effectiveStudentId = String(req.query.studentId || '');
+    effectiveClassId = String(req.query.classId || '');
+  } else {
+    return res.status(401).json({ error: 'Cần phiên xác thực học sinh hoặc tài khoản giáo viên để xem bài tập.' });
+  }
+
+  if (!effectiveStudentId || !effectiveClassId) {
     return res.status(400).json({ error: 'Thiếu studentId hoặc classId.' });
   }
 
@@ -996,10 +1149,15 @@ app.get('/api/assignments/my-tasks', (req, res) => {
   const studentAssignments = allAssignments.filter((a: any) => {
     if (a.status !== 'assigned') return false;
 
-    const isClassMatch = Array.isArray(a.targetClassIds) && a.targetClassIds.includes(String(classId));
-    const isStudentMatch = Array.isArray(a.targetStudentIds) && a.targetStudentIds.includes(String(studentId));
-
-    if (!isClassMatch && !isStudentMatch) return false;
+    // Giai đoạn 2, Yêu cầu 2: Nếu targetType là individual_students, chỉ trả bài cho studentId thuộc targetStudentIds
+    if (a.targetType === 'individual_students') {
+      if (!Array.isArray(a.targetStudentIds) || !a.targetStudentIds.includes(effectiveStudentId)) {
+        return false;
+      }
+    } else {
+      const isClassMatch = Array.isArray(a.targetClassIds) && a.targetClassIds.includes(effectiveClassId);
+      if (!isClassMatch) return false;
+    }
 
     const start = new Date(a.startTime);
     return start <= now;
@@ -1007,7 +1165,7 @@ app.get('/api/assignments/my-tasks', (req, res) => {
 
   const result = studentAssignments.map((a: any) => {
     const task = db.tasks.find(t => t.id === a.taskId);
-    const sub = db.submissions.find(s => s.taskId === a.taskId && s.studentId === studentId);
+    const sub = db.submissions.find(s => s.taskId === a.taskId && s.studentId === effectiveStudentId);
     const isOverdue = new Date(a.dueTime) < now;
 
     let studentStatus = 'not_started';
@@ -1015,12 +1173,18 @@ app.get('/api/assignments/my-tasks', (req, res) => {
       studentStatus = sub.status;
     }
 
+    // Giai đoạn 2, Yêu cầu 3: Không trả individualAssignmentCode trong API học sinh
+    const safeAssignment = { ...a };
+    const requiresIndividualCode = Boolean(safeAssignment.individualAssignmentCode);
+    delete safeAssignment.individualAssignmentCode;
+
     return {
-      assignment: a,
+      assignment: safeAssignment,
       task,
       submission: sub || null,
       studentStatus,
-      isOverdue
+      isOverdue,
+      requiresIndividualCode
     };
   }).filter((item: any) => item.task != null);
 
@@ -1101,51 +1265,116 @@ app.get('/api/assignments/:id/tracker', requireTeacherAuth, (req, res) => {
 });
 
 // --- SUBMISSIONS ---
-app.get('/api/submissions', (req, res) => {
-  const { studentId, classId, taskId, status } = req.query;
+app.get('/api/submissions', requireAnyAuth, (req: AuthenticatedRequest, res) => {
   let result = [...db.submissions];
 
-  if (studentId) {
-    result = result.filter(s => s.studentId === studentId);
-  }
-  if (classId) {
-    result = result.filter(s => s.classId === classId);
-  }
-  if (taskId) {
-    result = result.filter(s => s.taskId === taskId);
-  }
-  if (status) {
-    result = result.filter(s => s.status === status);
+  if (req.studentAuth) {
+    // Giai đoạn 1, Yêu cầu 5: Học sinh chỉ được xem bài nộp của chính mình
+    result = result.filter(s => s.studentId === req.studentAuth!.studentId);
+  } else if (req.user?.role === 'teacher') {
+    // Giáo viên chỉ xem được các bài nộp của lớp mình phụ trách (trừ admin)
+    if (req.user.role !== 'admin') {
+      const teacherClassIds = new Set(
+        db.classes.filter(c => c.teacherId === req.user!.id || c.teacherName === req.user!.name).map(c => c.id)
+      );
+      if (teacherClassIds.size > 0) {
+        result = result.filter(s => teacherClassIds.has(s.classId));
+      }
+    }
+    const { studentId, classId, taskId, status } = req.query;
+    if (studentId) result = result.filter(s => s.studentId === studentId);
+    if (classId) result = result.filter(s => s.classId === classId);
+    if (taskId) result = result.filter(s => s.taskId === taskId);
+    if (status) result = result.filter(s => s.status === status);
+  } else if (req.user?.role === 'admin' || req.user?.role === 'second_grader') {
+    const { studentId, classId, taskId, status } = req.query;
+    if (studentId) result = result.filter(s => s.studentId === studentId);
+    if (classId) result = result.filter(s => s.classId === classId);
+    if (taskId) result = result.filter(s => s.taskId === taskId);
+    if (status) result = result.filter(s => s.status === status);
   }
 
   res.json(result);
 });
 
-app.get('/api/submissions/:id', (req, res) => {
+app.get('/api/submissions/:id', requireAnyAuth, (req: AuthenticatedRequest, res) => {
   const sub = db.submissions.find(s => s.id === req.params.id);
   if (!sub) return res.status(404).json({ error: 'Bài nộp không tồn tại.' });
+
+  // Giai đoạn 1, Yêu cầu 5: Học sinh không thể xem bài nộp của học sinh khác
+  if (req.studentAuth && sub.studentId !== req.studentAuth.studentId) {
+    return res.status(403).json({ error: 'Không có quyền truy cập bài nộp của học sinh khác.' });
+  }
+
   res.json(sub);
 });
 
-app.post('/api/submissions', (req, res) => {
+app.post('/api/submissions', requireAnyAuth, (req: AuthenticatedRequest, res) => {
+  let studentId = '';
+  let studentName = '';
+  let studentCode = '';
+  let classId = '';
+  let className = '';
+
+  if (req.studentAuth) {
+    // Giai đoạn 1, Yêu cầu 4: Xác minh studentId từ phiên máy chủ, không tin dữ liệu do client gửi
+    studentId = req.studentAuth.studentId;
+    studentName = req.studentAuth.fullName;
+    studentCode = req.studentAuth.studentCode;
+    classId = req.studentAuth.classId;
+    className = db.classes.find(c => c.id === classId)?.name || 'Lớp';
+  } else if (req.user && (req.user.role === 'teacher' || req.user.role === 'admin')) {
+    studentId = req.body.studentId;
+    studentName = req.body.studentName || 'Học sinh';
+    studentCode = req.body.studentCode || 'HS';
+    classId = req.body.classId || 'class-8a1';
+    className = req.body.className || 'Lớp';
+  } else {
+    return res.status(401).json({ error: 'Cần phiên xác thực học sinh hợp lệ để nộp bài.' });
+  }
+
   const {
     taskId,
     taskNumber,
-    studentId,
-    studentName,
-    studentCode,
-    classId,
-    className,
     submissionData,
     isFinalSubmission
   } = req.body;
 
-  if (!taskId || !studentId) {
-    return res.status(400).json({ error: 'Thiếu thông tin taskId hoặc studentId.' });
+  if (!taskId) {
+    return res.status(400).json({ error: 'Thiếu thông tin taskId.' });
+  }
+
+  const task = db.tasks.find(t => t.id === taskId);
+  if (!task) {
+    return res.status(404).json({ error: 'Bài tập không tồn tại trong hệ thống.' });
+  }
+
+  // Giai đoạn 2, Yêu cầu 5: Kiểm tra quyền mở bài, nộp bài và thời hạn ở máy chủ
+  const now = new Date();
+  const assignment = (db.assignments || []).find(
+    (a: any) => a.taskId === taskId && a.status === 'assigned' &&
+      (a.targetType === 'individual_students' ? (a.targetStudentIds || []).includes(studentId) : (a.targetClassIds || []).includes(classId))
+  );
+
+  if (assignment) {
+    if (new Date(assignment.startTime) > now) {
+      return res.status(403).json({ error: 'Chưa đến thời gian bắt đầu làm bài tập này.' });
+    }
+  }
+
+  // Giai đoạn 4, Yêu cầu 6: Enforce mandatory AI disclosure for T3 tasks on final submission
+  const aiLevel = assignment?.aiLevel || task.aiLevel || 'T1';
+  if (aiLevel === 'T3' && isFinalSubmission) {
+    const disclosure = submissionData?.aiDisclosure;
+    if (!disclosure || !disclosure.whatVerified || !disclosure.studentContribution) {
+      return res.status(400).json({
+        error: 'Bài tập mức độ T3 bắt buộc phải đính kèm Bản công khai và kiểm chứng AI (AI Disclosure & Verification) trước khi nộp chính thức.'
+      });
+    }
   }
 
   let existing = db.submissions.find(s => s.taskId === taskId && s.studentId === studentId);
-  const timestamp = new Date().toISOString();
+  const timestamp = now.toISOString();
 
   if (existing) {
     const newVersionNumber = (existing.currentVersion || 1) + 1;
@@ -1166,11 +1395,11 @@ app.post('/api/submissions', (req, res) => {
       id: `audit-${Date.now()}`,
       timestamp,
       actorId: studentId,
-      actorName: studentName || 'Học sinh',
+      actorName: studentName,
       actorRole: 'student',
       action: isFinalSubmission ? 'NỘP_PHIÊN_BẢN_MỚI' : 'LƯU_BẢN_NHÁP_PHIÊN_BẢN',
       targetId: existing.id,
-      details: `Học sinh đã cập nhật phiên bản ${newVersionNumber} cho Nhiệm vụ`
+      details: `Học sinh ${studentName} đã cập nhật phiên bản ${newVersionNumber} cho Nhiệm vụ "${task.title}"`
     });
 
     saveDatabase();
@@ -1180,12 +1409,12 @@ app.post('/api/submissions', (req, res) => {
   const newSubmission = {
     id: `sub-${Date.now()}`,
     taskId,
-    taskNumber: Number(taskNumber) || 1,
+    taskNumber: Number(taskNumber) || task.taskNumber || 1,
     studentId,
-    studentName: studentName || 'Học sinh',
-    studentCode: studentCode || 'HS',
-    classId: classId || 'class-8a1',
-    className: className || 'Lớp 8A1',
+    studentName,
+    studentCode,
+    classId,
+    className,
     status: isFinalSubmission ? 'submitted' : 'draft',
     currentVersion: 1,
     versions: [
@@ -1204,11 +1433,11 @@ app.post('/api/submissions', (req, res) => {
     id: `audit-${Date.now()}`,
     timestamp,
     actorId: studentId,
-    actorName: studentName || 'Học sinh',
+    actorName: studentName,
     actorRole: 'student',
     action: isFinalSubmission ? 'NỘP_BÀI_LẦN_ĐẦU' : 'TẠO_BẢN_NHÁP',
     targetId: newSubmission.id,
-    details: `Học sinh khởi tạo bài nộp cho nhiệm vụ`
+    details: `Học sinh ${studentName} khởi tạo bài nộp cho nhiệm vụ "${task.title}"`
   });
 
   saveDatabase();
@@ -1216,15 +1445,46 @@ app.post('/api/submissions', (req, res) => {
 });
 
 // --- TEACHER EVALUATIONS & RUBRICS ---
-app.get('/api/evaluations', (req, res) => {
+app.get('/api/evaluations', requireAnyAuth, (req: AuthenticatedRequest, res) => {
   const { submissionId, graderRole } = req.query;
   let evals = [...db.evaluations];
+
   if (submissionId) {
     evals = evals.filter(e => e.submissionId === submissionId);
   }
   if (graderRole) {
     evals = evals.filter(e => e.graderRole === graderRole);
   }
+
+  if (req.studentAuth) {
+    // Giai đoạn 1, Yêu cầu 5: Học sinh chỉ xem đánh giá cho bài nộp của chính mình
+    const studentSubIds = new Set(
+      db.submissions.filter(s => s.studentId === req.studentAuth!.studentId).map(s => s.id)
+    );
+    evals = evals.filter(e => studentSubIds.has(e.submissionId));
+    // Ẩn đánh giá nội bộ của giám khảo 2 trước khi hòa giải
+    evals = evals.filter(e => e.isFinalDecision || e.graderRole === 'teacher' || e.graderRole === 'consensus');
+  } else if (req.user?.role === 'second_grader') {
+    // Giai đoạn 4, Yêu cầu 1: Blind Grading - Giám khảo 2 không được thấy điểm giám khảo 1 trước khi tự chấm
+    evals = evals.map(e => {
+      if (e.graderRole === 'teacher') {
+        const grader2Submitted = db.evaluations.some(
+          e2 => e2.submissionId === e.submissionId && e2.graderRole === 'second_grader'
+        );
+        if (!grader2Submitted) {
+          return {
+            ...e,
+            weightedScore10: -1,
+            criterionGrades: [],
+            generalFeedback: 'Điểm đang được ẩn để đảm bảo nguyên tắc chấm độc lập (Blind Grading)',
+            oralDefense: undefined
+          };
+        }
+      }
+      return e;
+    });
+  }
+
   res.json(evals);
 });
 
@@ -1244,6 +1504,7 @@ app.post('/api/evaluations', requireTeacherAuth, (req: AuthenticatedRequest, res
     return res.status(400).json({ error: 'Thiếu dữ liệu đánh giá.' });
   }
 
+  // Giai đoạn 4, Yêu cầu 4: Trọng số Rubric chuẩn hóa R1–R6 (15%, 20%, 25%, 20%, 10%, 10% = 100%)
   const weights: Record<string, number> = {
     R1: 0.15,
     R2: 0.20,
@@ -1255,9 +1516,10 @@ app.post('/api/evaluations', requireTeacherAuth, (req: AuthenticatedRequest, res
 
   let totalWeightedRatio = 0;
   for (const cg of criterionGrades) {
-    const level = cg.selectedLevel;
-    const ratio = level === 0 ? 0 : level / 4;
-    const w = weights[cg.criterionId] || 0.15;
+    const level = Number(cg.selectedLevel) || 0;
+    const clampedLevel = Math.max(0, Math.min(4, level));
+    const ratio = clampedLevel / 4;
+    const w = weights[cg.criterionId] !== undefined ? weights[cg.criterionId] : 0.15;
     totalWeightedRatio += ratio * w;
   }
 
@@ -1296,7 +1558,8 @@ app.post('/api/evaluations', requireTeacherAuth, (req: AuthenticatedRequest, res
 
   const sub = db.submissions.find(s => s.id === submissionId);
   if (sub) {
-    sub.status = oralDefense ? 'graded' : 'oral_defense_pending';
+    // Giai đoạn 4, Yêu cầu 7: Vấn đáp do giáo viên xác nhận trực tiếp
+    sub.status = oralDefense?.ownershipConfirmed ? 'graded' : (oralDefense ? 'graded' : 'oral_defense_pending');
     sub.updatedAt = new Date().toISOString();
   }
 
@@ -1318,7 +1581,6 @@ app.post('/api/evaluations', requireTeacherAuth, (req: AuthenticatedRequest, res
 // Double Grading
 app.get('/api/double-grading/:submissionId', requireTeacherAuth, (req: AuthenticatedRequest, res) => {
   const { submissionId } = req.params;
-  const currentUserId = req.user.id;
 
   const evals = db.evaluations.filter(e => e.submissionId === submissionId);
   const grader1Eval = evals.find(e => e.graderRole === 'teacher') || evals[0];
@@ -1390,44 +1652,113 @@ app.post('/api/double-grading/reconcile', requireTeacherAuth, (req: Authenticate
   if (!sub) return res.status(404).json({ error: 'Bài nộp không tồn tại.' });
 
   const finalScore = Number(reconciledScore);
+  if (isNaN(finalScore) || finalScore < 0 || finalScore > 10) {
+    return res.status(400).json({ error: 'Điểm hòa giải phải từ 0 đến 10.' });
+  }
+
+  // Giai đoạn 4, Yêu cầu 3: Lưu điểm đồng thuận vào db.evaluations và cập nhật trạng thái bài nộp thành graded
+  const now = new Date().toISOString();
+  let consensusEval = db.evaluations.find(e => e.submissionId === submissionId && e.graderRole === 'consensus');
+
+  if (consensusEval) {
+    consensusEval.weightedScore10 = finalScore;
+    consensusEval.isFinalDecision = true;
+    consensusEval.reconciledScore = finalScore;
+    consensusEval.reconciliationNotes = reconciliationNotes || '';
+    consensusEval.gradedAt = now;
+  } else {
+    const teacherEval = db.evaluations.find(e => e.submissionId === submissionId && e.graderRole === 'teacher');
+    if (teacherEval) {
+      teacherEval.isFinalDecision = true;
+      teacherEval.reconciledScore = finalScore;
+      teacherEval.reconciliationNotes = reconciliationNotes || '';
+    }
+
+    consensusEval = {
+      id: `eval-consensus-${Date.now()}`,
+      submissionId,
+      graderId: req.user.id,
+      graderName: req.user.name,
+      graderRole: 'consensus',
+      gradedAt: now,
+      criterionGrades: teacherEval?.criterionGrades || [],
+      weightedScore10: finalScore,
+      generalFeedback: `Điểm đồng thuận hội đồng: ${finalScore}/10. ${reconciliationNotes || ''}`,
+      strengths: teacherEval?.strengths || '',
+      weaknesses: teacherEval?.weaknesses || '',
+      recommendations: teacherEval?.recommendations || '',
+      oralDefense: teacherEval?.oralDefense,
+      isFinalDecision: true,
+      reconciledScore: finalScore,
+      reconciliationNotes: reconciliationNotes || ''
+    };
+    db.evaluations.push(consensusEval);
+  }
+
+  // Cập nhật trạng thái bài nộp thành graded
+  sub.status = 'graded';
+  sub.updatedAt = now;
 
   db.auditLogs.push({
     id: `audit-${Date.now()}`,
-    timestamp: new Date().toISOString(),
+    timestamp: now,
     actorId: req.user.id,
     actorName: req.user.name,
     actorRole: req.user.role,
     action: 'HÒA_GIẢI_ĐIỂM_CHẤM_HAI_VÒNG',
     targetId: submissionId,
-    details: `Hội đồng thống nhất điểm cuối cùng: ${finalScore}/10. Ghi chú: ${reconciliationNotes || 'Không'}`
+    details: `Hội đồng thống nhất điểm cuối cùng: ${finalScore}/10 cho bài nộp ${submissionId}. Ghi chú: ${reconciliationNotes || 'Không'}`
   });
 
   saveDatabase();
-  res.json({ success: true, finalScore });
+  res.json({ success: true, finalScore, evaluation: consensusEval, submission: sub });
 });
 
 // Appeals
-app.get('/api/appeals', (req, res) => {
-  const { studentId } = req.query;
+app.get('/api/appeals', requireAnyAuth, (req: AuthenticatedRequest, res) => {
   let result = db.appeals;
-  if (studentId) {
-    result = result.filter(a => a.studentId === studentId);
+  if (req.studentAuth) {
+    // Học sinh chỉ xem phúc khảo của chính mình
+    result = result.filter(a => a.studentId === req.studentAuth!.studentId);
+  } else {
+    const { studentId } = req.query;
+    if (studentId) {
+      result = result.filter(a => a.studentId === studentId);
+    }
   }
   res.json(result);
 });
 
-app.post('/api/appeals', (req, res) => {
-  const { submissionId, studentId, studentName, taskTitle, studentReason, studentEvidence } = req.body;
+app.post('/api/appeals', requireAnyAuth, (req: AuthenticatedRequest, res) => {
+  const { submissionId, taskTitle, studentReason, studentEvidence } = req.body;
   if (!submissionId || !studentReason) {
     return res.status(400).json({ error: 'Thiếu lý do hoặc thông tin bài nộp cần xem lại.' });
+  }
+
+  let studentId = '';
+  let studentName = '';
+
+  if (req.studentAuth) {
+    studentId = req.studentAuth.studentId;
+    studentName = req.studentAuth.fullName;
+  } else if (req.user) {
+    studentId = req.body.studentId || req.user.id;
+    studentName = req.body.studentName || req.user.name;
+  } else {
+    return res.status(401).json({ error: 'Cần đăng nhập để gửi phúc khảo.' });
+  }
+
+  const sub = db.submissions.find(s => s.id === submissionId);
+  if (req.studentAuth && sub && sub.studentId !== req.studentAuth.studentId) {
+    return res.status(403).json({ error: 'Chỉ được gửi yêu cầu phúc khảo cho bài nộp của chính mình.' });
   }
 
   const newAppeal = {
     id: `appeal-${Date.now()}`,
     submissionId,
     studentId,
-    studentName: studentName || 'Học sinh',
-    taskTitle: taskTitle || 'Bài tập',
+    studentName,
+    taskTitle: taskTitle || (sub ? `Nhiệm vụ ${sub.taskNumber}` : 'Bài tập'),
     requestedAt: new Date().toISOString(),
     studentReason,
     studentEvidence: studentEvidence || '',
@@ -1458,26 +1789,46 @@ app.get('/api/test-cases/technical', (req, res) => {
   res.json(TECHNICAL_TEST_CASES);
 });
 
+function normalizeOutput(out: string): string {
+  return (out || '')
+    .trim()
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .join('\n');
+}
+
 app.post('/api/test-runner/verify', (req, res) => {
   const { taskIdOrNumber, input, studentOutput } = req.body;
-  // If task exists, look up mandatory test cases
   let task = db.tasks.find(t => t.id === taskIdOrNumber || t.taskNumber === Number(taskIdOrNumber));
   let isMatch = false;
 
+  const normInput = normalizeOutput(input || '');
+  const normActual = normalizeOutput(studentOutput || '');
+
+  // Giai đoạn 4, Yêu cầu 5: So sánh output chuẩn hóa cho cả bài tập tùy chỉnh do giáo viên tạo theo mandatoryTestCases
   if (task && task.mandatoryTestCases && task.mandatoryTestCases.length > 0) {
     const matchedTc = task.mandatoryTestCases.find(
-      (tc: any) => tc.input.trim() === (input || '').trim()
+      (tc: any) => normalizeOutput(tc.input) === normInput
     );
     if (matchedTc) {
+      const normExpected = normalizeOutput(matchedTc.expectedOutput);
+      isMatch = normActual === normExpected;
+    } else {
       const taskNum = (task.taskNumber || 1) as 1 | 2 | 3;
       const compResult = compareOutputs(taskNum, input || '', studentOutput || '');
       isMatch = compResult.isMatch;
     }
+  } else if (taskIdOrNumber) {
+    const taskNum = Number(taskIdOrNumber) as 1 | 2 | 3;
+    const compResult = compareOutputs(taskNum, input || '', studentOutput || '');
+    isMatch = compResult.isMatch;
   }
 
   res.json({
     isMatch,
-    normalizedActual: (studentOutput || '').trim(),
+    normalizedActual: normActual,
     verifiedAt: new Date().toISOString()
   });
 });
